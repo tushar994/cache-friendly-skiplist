@@ -152,10 +152,10 @@ class SimpleSkiplist {
             } else if (*cur->key == key) {
                 prev->lock.unlock();
                 while(cur->down != nullptr){
+                    cur->down->lock.lock();
                     nodeType* d = cur->down;
                     cur->lock.unlock();
                     cur = d;
-                    cur->lock.lock();
                 }
                 V val = *cur->val;
                 cur->lock.unlock();
