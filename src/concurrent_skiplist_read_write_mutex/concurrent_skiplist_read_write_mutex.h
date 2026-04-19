@@ -13,6 +13,7 @@
 #include <map>
 #include <random>
 #include <thread>
+#include <shared_mutex>
 
 #endif
 
@@ -27,52 +28,13 @@ struct DefaultLevelGenerator {
     }
 };
 
-constexpr int num_tries = 3;
-class Lock {
-    std::atomic<bool> flag{false};
-
-    public:
-    Lock(){}
-
-    ~Lock(){}
-
-    void unlock(){
-        flag.exchange(false);
-    }
-
-    void lock(){
-        int tries = 0;
-        while(true){
-            bool f = false;
-            bool success = flag.compare_exchange_weak(f, true);
-            if(success){
-                return;
-            } else {
-                tries++;
-            }
-
-            if(tries >= num_tries) {
-                tries = 0;
-                std::this_thread::yield();
-            }
-        }
-    }
-
-    bool try_lock(){
-        bool f = false;
-        bool success = flag.compare_exchange_strong(f,true);
-        return success;
-    }
-
-};
-
 template <typename K, typename V>
 struct SimpleSkiplistNode {
     V* val;
     K* key;
     SimpleSkiplistNode* next;
     SimpleSkiplistNode* down;
-    Lock lock;
+    std::shared_mutex _mut;
 
     SimpleSkiplistNode(K* k = nullptr, V* v = nullptr, SimpleSkiplistNode* n = nullptr, SimpleSkiplistNode* dw = nullptr) 
         : val(v), key(k), next(n), down(dw) 
@@ -83,6 +45,21 @@ struct SimpleSkiplistNode {
         if(key!=nullptr) delete key;
         next = nullptr;
         down = nullptr;
+    }
+
+    inline void lock(bool read_only){
+        if(read_only){
+            _mut.lock_shared();
+        } else {
+            _mut.lock();
+        }
+    }
+    inline void unlock(bool read_only){
+        if(read_only){
+            _mut.unlock_shared();
+        } else {
+            _mut.unlock();
+        }
     }
 };
 
@@ -95,26 +72,25 @@ class SimpleSkiplist {
     nodeType* structure[MAX_HEIGHT];
 
     template <typename Func, typename... Args>
-    void move_down_prev_cur_locked(nodeType*& cur, nodeType*& prev, Func&& func, Args&&... args){
-        using ReturnType = std::invoke_result_t<Func, nodeType*&, nodeType*&, Args...>;
-
+    void move_down_prev_cur_locked(bool read_only_unlock, bool read_only_lock, nodeType*& cur, nodeType*& prev, Func&& func, Args&&... args){
         std::invoke(std::forward<Func>(func), cur, prev, std::forward<Args>(args)...);
 
-        cur->lock.unlock();
+        cur->unlock(read_only_unlock);
+
         nodeType* t = prev->down;
-        if(t!=nullptr) t->lock.lock();
-        prev->lock.unlock();
+        if(t!=nullptr) t->lock(read_only_lock);
+        prev->unlock(read_only_unlock);
         prev = t;
     }
 
     template <typename Func, typename... Args>
-    void move_right_prev_cur_locked(nodeType*& cur, nodeType*& prev, Func&& func, Args&&... args){
+    void move_right_prev_cur_locked(bool read_only, nodeType*& cur, nodeType*& prev, Func&& func, Args&&... args){
 
         using ReturnType = std::invoke_result_t<Func, nodeType*&, nodeType*&, Args...>;
 
         std::invoke(std::forward<Func>(func), cur, prev, std::forward<Args>(args)...);
 
-        prev->lock.unlock();
+        prev->unlock(read_only);
         prev = cur;
     }
 
@@ -136,32 +112,32 @@ class SimpleSkiplist {
     }
 
     std::optional<V> get(K key) {
-        structure[MAX_HEIGHT-1]->lock.lock();
+        structure[MAX_HEIGHT-1]->lock(true);
         nodeType* prev = structure[MAX_HEIGHT-1];
         while(true){
             if(prev == nullptr || prev->next == nullptr){
-                if(prev!=nullptr) prev->lock.unlock();
+                if(prev!=nullptr) prev->unlock(true);
                 return std::nullopt;
             }
-            prev->next->lock.lock();
+            prev->next->lock(true);
             nodeType* cur = prev->next;
 
             if(cur->next == nullptr || *cur->key > key){
-                move_down_prev_cur_locked(cur, prev, [](nodeType*&, nodeType*&){});
+                move_down_prev_cur_locked(true, true, cur, prev, [](nodeType*&, nodeType*&){});
 
             } else if (*cur->key == key) {
-                prev->lock.unlock();
+                prev->unlock(true);
                 while(cur->down != nullptr){
-                    cur->down->lock.lock();
+                    cur->down->lock(true);
                     nodeType* d = cur->down;
-                    cur->lock.unlock();
+                    cur->unlock(true);
                     cur = d;
                 }
                 V val = *cur->val;
-                cur->lock.unlock();
+                cur->unlock(true);
                 return val;
             } else {
-                move_right_prev_cur_locked(cur, prev, [](nodeType*&, nodeType*&){});
+                move_right_prev_cur_locked(true, cur, prev, [](nodeType*&, nodeType*&){});
             }
         }
     }
@@ -170,23 +146,29 @@ class SimpleSkiplist {
         int level = _gen(MAX_HEIGHT);
         nodeType* older_level_val = nullptr;
         int cur_height = MAX_HEIGHT-1;
+        bool read_only = true;
+        if(level >= cur_height){
+            read_only = false;
+        }
 
-        structure[MAX_HEIGHT-1]->lock.lock();
+        structure[MAX_HEIGHT-1]->lock(read_only);
         nodeType* prev = structure[MAX_HEIGHT-1];
         while(true){
             // std::cout<<"at this height: "<<cur_height<<"\n";
             if(prev==nullptr || prev->next == nullptr){
-                if(prev!=nullptr) prev->lock.unlock();
+                if(prev!=nullptr) prev->unlock(read_only);
                 return;
             }
-            prev->next->lock.lock();
+            prev->next->lock(read_only);
             nodeType* cur = prev->next;
             if(cur->next == nullptr || *cur->key > key){
                 // not found at this level.
-                move_down_prev_cur_locked(cur,prev, [](nodeType*& cur, nodeType*& prev, int& cur_height, int& level, nodeType*& older_level_val, K& key, V& val){
+                bool next_read_only = read_only;
+                if(cur_height == (level + 1)) next_read_only = false;
+                move_down_prev_cur_locked(read_only, next_read_only, cur,prev, [](nodeType*& cur, nodeType*& prev, int& cur_height, int& level, nodeType*& older_level_val, K& key, V& val, bool read_only){
                     if(level>=cur_height){
                         nodeType* new_val = new nodeType();
-                        new_val->lock.lock();
+                        new_val->lock(read_only);
 
                         new_val->next = cur;
                         prev->next = new_val;
@@ -194,124 +176,128 @@ class SimpleSkiplist {
 
                         if(older_level_val != nullptr){
                             older_level_val->down = new_val;
-                            older_level_val->lock.unlock();
+                            older_level_val->unlock(read_only);
                         }
                         older_level_val = new_val;
                         if(cur_height == 0) {
                             new_val->val = new V(val);
-                            new_val->lock.unlock();
+                            new_val->unlock(read_only);
                         }
                     }
-                }, cur_height, level, older_level_val, key, val);
+                }, cur_height, level, older_level_val, key, val, read_only);
                 cur_height--;
+                read_only = next_read_only;
             } else if (*cur->key == key) {
-                prev->lock.unlock();
+                prev->unlock(read_only);
                 if(older_level_val != nullptr){
                     older_level_val->down = cur;
-                    older_level_val->lock.unlock();
+                    older_level_val->unlock(read_only);
                 }
                 while(cur->down != nullptr){
-                    cur->down->lock.lock();
+                    if(cur_height == 1) cur->down->lock(false);
+                    else cur->down->lock(true);
                     nodeType* t = cur->down;
-                    cur->lock.unlock();
+                    cur->unlock(read_only);
+                    read_only = true;
                     cur = t;
+                    cur_height--;
                 }
                 cur->val = new V(val);
-                cur->lock.unlock();
+                cur->unlock(false);
                 break;
             } else {
-                move_right_prev_cur_locked(cur, prev, [](nodeType*&, nodeType*&){});
+                move_right_prev_cur_locked(read_only, cur, prev, [](nodeType*&, nodeType*&){});
             }
         }
     }
 
     bool remove(K key) {
-        structure[MAX_HEIGHT-1]->lock.lock();
+        structure[MAX_HEIGHT-1]->lock(false);
         nodeType* prev = structure[MAX_HEIGHT-1];
         while(true){
             if(prev==nullptr || prev->next == nullptr){
-                if(prev!=nullptr) prev->lock.unlock();
+                if(prev!=nullptr) prev->unlock(false);
                 return false;
             }
-            prev->next->lock.lock();
+            prev->next->lock(false);
             nodeType* cur = prev->next;
 
             if(cur->next == nullptr || *cur->key > key){
-                move_down_prev_cur_locked(cur, prev, [](nodeType*&, nodeType*&){});
+                move_down_prev_cur_locked(false, false, cur, prev, [](nodeType*&, nodeType*&){});
             } else if (*cur->key == key) {
                 while(true){
                     while(*cur->key < key){
-                        cur->next->lock.lock();
+                        cur->next->lock(false);
                         nodeType* t = cur->next;
-                        prev->lock.unlock();
+                        prev->unlock(false);
                         prev = cur;
                         cur = t;
                     }
                     prev->next = cur->next;
-                    if(prev->down!=nullptr) prev->down->lock.lock();
+                    if(prev->down!=nullptr) prev->down->lock(false);
                     nodeType* down = prev->down;
                     delete cur;
-                    prev->lock.unlock();
+                    prev->unlock(false);
                     if(down == nullptr) break;
-                    down->next->lock.lock();
+                    down->next->lock(false);
                     cur = down->next;
                     prev = down;
                 }
                 return true;
             } else {
-                move_right_prev_cur_locked(cur, prev, [](nodeType*&, nodeType*&){});
+                move_right_prev_cur_locked(false, cur, prev, [](nodeType*&, nodeType*&){});
             }
         }
     }
 
     template <typename F>
     void range(K key, F func, uint64_t length){
-        structure[MAX_HEIGHT-1]->lock.lock();
+        structure[MAX_HEIGHT-1]->lock(true);
         nodeType* prev = structure[MAX_HEIGHT-1];
         nodeType* cur;
         while(true){
             if(prev==nullptr || prev->next == nullptr){
-                if(prev!=nullptr) prev->lock.unlock();
+                if(prev!=nullptr) prev->unlock(true);
                 return;
             }
-            prev->next->lock.lock();
+            prev->next->lock(true);
             cur = prev->next;
 
             if(cur->next == nullptr || *cur->key > key){
                 if(cur->down == nullptr){
-                    prev->lock.unlock();
+                    prev->unlock(true);
                     break;
                 }
-                move_down_prev_cur_locked(cur, prev, [](nodeType*&, nodeType*&){});
+                move_down_prev_cur_locked(true, true, cur, prev, [](nodeType*&, nodeType*&){});
             } else if (*cur->key == key) {
-                prev->lock.unlock();
+                prev->unlock(true);
                 while(cur->down != nullptr){
-                    cur->down->lock.lock();
+                    cur->down->lock(true);
                     nodeType* t = cur->down;
-                    cur->lock.unlock();
+                    cur->unlock(true);
                     cur = t;
                 }
                 break;
             } else {
-                move_right_prev_cur_locked(cur, prev, [](nodeType*&, nodeType*&){});
+                move_right_prev_cur_locked(true, cur, prev, [](nodeType*&, nodeType*&){});
             }
         }
         if(cur->key == nullptr) {
-            cur->lock.unlock();
+            cur->unlock(true);
             return;
         }
         for(uint64_t i=0;i<length;i++){
             if(cur->key == nullptr) {
-                cur->lock.unlock();
+                cur->unlock(true);
                 return;
             }
             func(*cur->key, *cur->val);
-            cur->next->lock.lock();
+            cur->next->lock(true);
             nodeType* t = cur->next;
-            cur->lock.unlock();
+            cur->unlock(true);
             cur = t;
         }
-        cur->lock.unlock();
+        cur->unlock(true);
     }
 
     ~SimpleSkiplist() {
