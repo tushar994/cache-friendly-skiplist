@@ -262,9 +262,9 @@ class SimpleSkiplist {
             for(int i=cur_index;i<cur->size;i++){
                 current_insert_node->data[j] = std::move(cur->data[i]);
                 current_insert_node->size++;
-                cur->size--;
                 j++;
             }
+            cur->size = cur_index;
             return;
         }
         
@@ -284,8 +284,6 @@ class SimpleSkiplist {
 
         structure[MAX_HEIGHT-1]->lock(read_only);
         nodeType* cur = structure[MAX_HEIGHT-1];
-
-
         while(cur_height>=(level+1)){
             // search
             // at the end of this, either we are done, or we have reached the height at level, where we need to do our first insert.
@@ -336,6 +334,7 @@ class SimpleSkiplist {
 
         nodeType* next_node = nullptr;
         nodeType* current_insert_node = nullptr;
+        nodeType* prev = nullptr;
         // there is no next_node allocated yet, or a current isnert node that we need to care about.
 
         while(true){
@@ -357,7 +356,10 @@ class SimpleSkiplist {
                             index_found = i+1;
                             break;
                         } else {
-                            move_right_prev_cur_locked(false, next, cur, [](nodeType*&, nodeType*&){});
+                            nodeType* next = cur->next;
+                            safe_unlock(prev, false);
+                            prev = cur;
+                            cur = next;
                         }
                         break;
                     }
@@ -376,15 +378,22 @@ class SimpleSkiplist {
                     if(current_insert_node != nullptr){
                         for(int j=index;j<cur->size;j++){
                             current_insert_node->data[j-index] = std::move(cur->data[j]);
-                            cur->size--;
                             current_insert_node->size++;
                         }
+                        cur->size = index;
                         current_insert_node->next = cur->next;
                         cur->next = current_insert_node;
                         cur->unlock(false);
+                        if(index == 0){
+                            // cur is now empty. prev is guaranteed to be filled
+                            prev->next = current_insert_node;
+                        }
                         cur = current_insert_node;
                         index = 0;
                     }
+
+                    safe_unlock(prev, false);
+                    prev = nullptr;
                     
                     // delete new_node
                     if(next_node != nullptr){
@@ -409,8 +418,13 @@ class SimpleSkiplist {
 
             // index_found is the index in cur that we need to do our insert in. is -1 then we are still searching.
             if(index_found != -1){
+                // if prev is not null, then it is not needed;
+                safe_unlock(prev, false);
+                prev = nullptr;
+
+
                 insert_into_node(cur, index_found, key, cur_height, val, next_node, current_insert_node);
-                // so we have inserted into cur. cur is the node that we need to go down. next_node has to be current_insert_node. current_insert_node has to be discarded.
+                // so we have inserted into current_insert_node. cur is the node that we need to go down. next_node has to be current_insert_node. current_insert_node has to be discarded.
                 // can cur == current_insert_node? no i dont think so.
                 safe_unlock(current_insert_node, false);
                 current_insert_node = next_node;
@@ -460,13 +474,13 @@ class SimpleSkiplist {
         }
     }
 
-    bool remove(K key) {
+    void remove(K key) {
         structure[MAX_HEIGHT-1]->lock(false);
         nodeType* cur = structure[MAX_HEIGHT-1];
         nodeType* prev = nullptr;
         while(true){
             if(cur == nullptr){
-                return false;
+                break;
             }
 
             for(int i=0;i<cur->size;i++){
@@ -493,10 +507,13 @@ class SimpleSkiplist {
                 }
                 if(*(cur->data[i].key) == key){
                     delete_value(cur, i, prev);
+                    break;
                 }
 
             }
         }
+        safe_unlock(cur, false);
+        safe_unlock(prev, false);
     }
 
     static void go_down_range(nodeType*& cur, int index, int& cur_height){

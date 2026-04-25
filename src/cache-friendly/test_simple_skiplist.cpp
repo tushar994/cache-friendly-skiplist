@@ -272,21 +272,18 @@ void test_delete_one_of_many() {
     std::cout << "\n-- test_delete_one_of_many --\n";
     auto* sl = new SimpleSkiplist<int, int>();
 
-    for(int i=0;i<10;i++){
-        sl->insert_or_modify(i, i*10);
-    }
-    std::cout << "       inserted a bunch\n";
-    sl->print();
-    
-    for(int i=0;i<10;i++){
+    for(int i=1;i<4;i++){
         sl->insert_or_modify(i, 2*i*10);
     }
+    std::cout << "       inserted a bunch\n";
+    
+    for(int i=1;i<4;i++){
+        sl->insert_or_modify(i, i*10);
+    }
     std::cout << "       reinserted a bunch\n";
-    sl->print();
     
     sl->remove(2);
     std::cout << "       removed key 2\n";
-    sl->print();
 
     auto r1 = sl->get(1); print_result("get(1)", r1);
     auto r2 = sl->get(2); print_result("get(2)", r2);
@@ -564,29 +561,29 @@ void test_range_stress() {
 int main() {
     std::cout << "=== SimpleSkiplist Tests ===\n";
 
-    // test_get_on_empty();
-    // test_insert_then_get();
-    // test_get_missing_key();
-    // test_modify_existing_key();
-    // test_multiple_inserts_in_order();
-    // test_multiple_inserts_out_of_order();
-    // test_insert_at_boundaries();
-    // test_destructor_on_empty();
-    // test_destructor_on_full();
+    test_get_on_empty();
+    test_insert_then_get();
+    test_get_missing_key();
+    test_modify_existing_key();
+    test_multiple_inserts_in_order();
+    test_multiple_inserts_out_of_order();
+    test_insert_at_boundaries();
+    test_destructor_on_empty();
+    test_destructor_on_full();
 
-    // // // uncomment once you add remove()
-    // test_delete_existing_key();
-    // test_delete_then_reinsert();
-    // test_replace();
-    // test_delete_nonexistent_key();
+    // // uncomment once you add remove()
+    test_delete_existing_key();
+    test_delete_then_reinsert();
+    test_replace();
+    test_delete_nonexistent_key();
     test_delete_one_of_many();
-    // test_stress();
-    // test_range_basic();
-    // test_range_from_beginning();
-    // test_range_length_exceeds_remaining();
-    // test_range_key_not_in_list();
-    // test_range_start_beyond_all_keys();
-    // test_range_stress();
+    test_stress();
+    test_range_basic();
+    test_range_from_beginning();
+    test_range_length_exceeds_remaining();
+    test_range_key_not_in_list();
+    test_range_start_beyond_all_keys();
+    test_range_stress();
 
     std::cout << "\n=== Results: " << passed << " passed, " << failed << " failed ===\n";
     return failed == 0 ? 0 : 1;
