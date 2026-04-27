@@ -283,7 +283,7 @@ void test_concurrent_chaos() {
     std::cout << "\n-- test_concurrent_chaos --\n";
     std::cout << "       (chaos test — just checking no crash/deadlock)\n";
     const int NUM_THREADS = 100;
-    const int OPS_PER_THREAD = 200;
+    const int OPS_PER_THREAD = 10000;
     const int KEY_RANGE = 50;  // small range so threads frequently hit same keys
     auto* sl = new SimpleSkiplist<int, int>();
 

@@ -18,7 +18,9 @@
 
 #endif
 
+#ifndef ARRAY_SIZE
 const int ARRAY_SIZE = 5;
+#endif
 
 struct DefaultLevelGenerator {
     // We keep the RNG state inside the functor or as static 
